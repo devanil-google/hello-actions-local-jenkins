@@ -108,7 +108,7 @@ pipeline {
                                     echo "📦 Running scanner container from image: ${params.SCANNER_IMAGE}"
                                     docker run --rm \\
                                         -v /var/run/docker.sock:/var/run/docker.sock \\
-                                        -v "$GGCP_KEY_FILE":/tmp/scc-key.json \\
+                                        -v "$GCP_KEY_FILE":/tmp/scc-key.json \\
                                         -e GCLOUD_KEY_PATH=/tmp/scc-key.json \\
                                         -e GCP_PROJECT_ID="${params.GCP_PROJECT_ID}" \\
                                         -e ORGANIZATION_ID="${params.ORGANIZATION_ID}" \\
