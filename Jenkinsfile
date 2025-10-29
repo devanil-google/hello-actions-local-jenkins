@@ -62,7 +62,7 @@ pipeline {
         // Stage 2: Build, Scan, and Push
         stage('Build, Scan, and Push') {
             steps {
-                withCredentials([file(credentialsId: 'GCP_CREDENTIALS_FILE', variable: 'GCP_KEY_PATH')]) {
+                withCredentials([file(credentialsId: 'GCP_CREDENTIALS', variable: 'GCP_KEY_PATH')]) {
 
                     // Authenticate to GCP and configure Docker
                     echo "Authenticating to GCP and configuring Docker..."
