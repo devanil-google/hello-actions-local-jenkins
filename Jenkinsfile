@@ -4,6 +4,10 @@ import groovy.transform.Field
 pipeline {
     agent any
 
+    options {
+        timestamps()
+    }
+    
     parameters {
         string(
             name: 'IMAGE_NAME_TO_SCAN',
