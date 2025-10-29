@@ -75,6 +75,7 @@ pipeline {
                         sh "gcloud auth activate-service-account --key-file=\"$GCP_KEY_FILE\""
                         sh 'gcloud auth list'
                         sh 'gcloud auth configure-docker gcr.io --quiet'
+                        sh 'gcloud auth configure-docker us-central1-docker.pkg.dev --quiet'
 
                         // Run scanner container
                         def exitCode = sh(
