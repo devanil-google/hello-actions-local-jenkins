@@ -1,5 +1,5 @@
 import groovy.transform.Field
-@Field def stageTimings = [:]   // <-- FIX 1: Make this variable global to the script
+@Field def stageTimings = [:]   // Make this variable global to the script
 
 pipeline {
     agent any
@@ -64,7 +64,7 @@ pipeline {
                     } finally {
                         def endTime = System.currentTimeMillis()
                         def duration = (endTime - startTime) / 1000.0
-                        this.stageTimings['Checkout'] = duration // <-- FIX 2: Use 'this.' to access global variable
+                        this.stageTimings['Checkout'] = duration // Use 'this.' to access global variable
                         echo "Checkout stage finished. Took: ${duration}s"
                     }
                 }
@@ -82,7 +82,7 @@ pipeline {
                     } finally {
                         def endTime = System.currentTimeMillis()
                         def duration = (endTime - startTime) / 1000.0
-                        this.stageTimings['Build'] = duration // <-- FIX 2: Use 'this.'
+                        this.stageTimings['Build'] = duration // Use 'this.'
                         echo "Build stage finished. Took: ${duration}s"
                     }
                 }
@@ -137,7 +137,7 @@ pipeline {
                     } finally {
                         def endTime = System.currentTimeMillis()
                         def duration = (endTime - startTime) / 1000.0
-                        this.stageTimings['Scan'] = duration // <-- FIX 2: Use 'this.'
+                        this.stageTimings['Scan'] = duration // Use 'this.'
                         echo "Authenticate & Scan stage finished. Took: ${duration}s"
                     }
                 }
@@ -161,106 +161,26 @@ pipeline {
                     } finally {
                         def endTime = System.currentTimeMillis()
                         def duration = (endTime - startTime) / 1000.0
-                        this.stageTimings['Push'] = duration // <-- FIX 2: Use 'this.'
+                        this.stageTimings['Push'] = duration // Use 'this.'
                         echo "Push stage finished. Took: ${duration}s"
                     }
                 }
             }
         }
-    }
 
-    // --- POST-BUILD STEP (Unchanged) ---
-    post {
-        always {
-            script {
-                echo "📊 Generating latency report..."
-                echo "Raw timing data: ${this.stageTimings}" // Using 'this.' here too for consistency
-
-                // Generate JavaScript arrays from our Groovy map
-                def labels = this.stageTimings.collect { key, val -> "'${key}'" }.join(',')
-                def data = this.stageTimings.collect { key, val -> val }.join(',')
-
-                // Define the HTML content for the report
-                def htmlContent = """
-                <html>
-                <head>
-                    <title>Pipeline Latency Report</title>
-                    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-                    <style>
-                        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; }
-                        .chart-container { 
-                            width: 80%; 
-                            max-width: 900px; 
-                            margin: auto; 
-                            padding: 20px; 
-                            border: 1px solid #ddd; 
-                            border-radius: 8px; 
-                            box-shadow: 0 4px 12px rgba(0,0,0,0.05);
-                        }
-                    </style>
-                </head>
-                <body>
-                    <div class="chart-container">
-                        <h2>Pipeline Stage Latency (Build #${env.BUILD_NUMBER})</h2>
-                        <canvas id="latencyChart"></canvas>
-                    </div>
-                    <script>
-                        const ctx = document.getElementById('latencyChart').getContext('2d');
-                        new Chart(ctx, {
-                            type: 'bar',
-                            data: {
-                                labels: [${labels}],
-                                datasets: [{
-                                    label: 'Stage Duration (seconds)',
-                                    data: [${data}],
-                                    backgroundColor: [
-                                        'rgba(54, 162, 235, 0.2)',
-                                        'rgba(255, 206, 86, 0.2)',
-                                        'rgba(255, 99, 132, 0.2)',
-                                        'rgba(75, 192, 192, 0.2)',
-                                        'rgba(153, 102, 255, 0.2)'
-                                    ],
-                                    borderColor: [
-                                        'rgba(54, 162, 235, 1)',
-                                        'rgba(255, 206, 86, 1)',
-                                        'rgba(255, 99, 132, 1)',
-                                        'rgba(75, 192, 192, 1)',
-                                        'rgba(153, 102, 255, 1)'
-                                    ],
-                                    borderWidth: 1
-                                }]
-                            },
-                            options: {
-                                indexAxis: 'y', // Makes it a horizontal bar chart for readability
-                                scales: {
-                                    x: {
-                                        beginAtZero: true,
-                                        title: {
-                                            display: true,
-                                            text: 'Duration (seconds)'
-                                        }
-                                    }
-                                }
-                            }
-                        });
-                    </script>
-                </body>
-                </html>
-                """
-                
-                // Write the HTML to a file in the workspace
-                writeFile file: 'latency-report.html', text: htmlContent
-
-                // Publish the HTML report
-                publishHTML(target: [
-                    allowMissing: false,
-                    alwaysLinkToLastBuild: true,
-                    keepAll: true,
-                    reportDir: '.',
-                    reportFiles: 'latency-report.html',
-                    reportName: 'Latency Report'
-                ])
+        // --- NEW FINAL STAGE TO PRINT RESULTS ---
+        stage('Print Latencies') {
+            // This stage will always run, even if previous stages failed
+            when { expression { true } }
+            steps {
+                script {
+                    echo "--- 📊 Final Pipeline Latencies ---"
+                    echo "${this.stageTimings}"
+                    echo "------------------------------------"
+                }
             }
         }
     }
+
+    // --- REMOVED THE ENTIRE 'post' BLOCK ---
 }
