@@ -175,7 +175,8 @@ pipeline {
         always {
             script {
                 echo "📊 Generating latency report..."
-                echo "Raw timing data: ${stageTimings.inspect()}"
+                // echo "Raw timing data: ${stageTimings.inspect()}" // <-- REMOVED THIS FAILING LINE
+                echo "Raw timing data: ${stageTimings}" // <-- Replaced with a sandbox-safe version
 
                 // Generate JavaScript arrays from our Groovy map
                 def labels = stageTimings.collect { key, val -> "'${key}'" }.join(',')
