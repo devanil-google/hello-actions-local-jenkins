@@ -1,7 +1,6 @@
 // A map to store the duration (in seconds) of each stage
 import groovy.transform.Field
 @Field def stageTimings = [:]
-def stageTimings = [:]
 
 pipeline {
     agent any
