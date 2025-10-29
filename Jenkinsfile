@@ -2,14 +2,15 @@ pipeline {
     agent any
 
     parameters {
-        string(name: 'IMAGE_NAME_TO_SCAN', defaultValue: 'checkout-image', description: 'App image name')
-        string(name: 'GCP_PROJECT_ID', defaultValue: 'cispoc', description: 'GCP Project ID')
-        string(name: 'AR_REPOSITORY', defaultValue: 'demo-images', description: 'Artifact Registry repo')
-        string(name: 'ORGANIZATION_ID', defaultValue: '714470867684', description: 'GCP Org ID')
-        string(name: 'CONNECTOR_ID', defaultValue: 'organizations/714470867684/locations/global/connectors/privatepreviewdemo', description: 'Connector ID')
-        string(name: 'SCANNER_IMAGE', defaultValue: 'us-central1-docker.pkg.dev/ci-plugin/ci-images/scc-artifactguard-scan-image:latest', description: 'Scanner image path')
-        string(name: 'IMAGE_TAG', defaultValue: 'latest', description: 'Image tag')
+        string(name: 'IMAGE_NAME_TO_SCAN', defaultValue: 'checkout-image', description: 'The tag for your application image to be built (e.g., my-app:latest)')
+        string(name: 'GCP_PROJECT_ID', defaultValue: 'cispoc', description: 'GCP Project ID for authentication')
+        string(name: 'AR_REPOSITORY', defaultValue: 'demo-images', description: 'Artifact Registry repository name (e.g., app-repo)')
+        string(name: 'ORGANIZATION_ID', defaultValue: '714470867684', description: 'Your GCP Organization ID')
+        string(name: 'CONNECTOR_ID', defaultValue: 'organizations/714470867684/locations/global/connectors/privatepreviewdemo', description: 'The ID for your pipeline connector')
+        string(name: 'SCANNER_IMAGE', defaultValue: 'us-central1-docker.pkg.dev/ci-plugin/ci-images/scc-artifactguard-scan-image:latest', description: 'The full registry path for your PRE-BUILT scanner tool')
+        string(name: 'IMAGE_TAG', defaultValue: 'latest', description: 'The Docker image version (of the app image)')
         booleanParam(name: 'IGNORE_SERVER_ERRORS', defaultValue: false, description: 'Ignore server errors')
+        string(name: 'VERBOSITY', defaultValue: 'HIGH', description: 'Verbosity flag')
     }
 
     environment {
@@ -17,23 +18,17 @@ pipeline {
     }
 
     stages {
-        stage('Measure Latencies') {
-            steps {
-                script {
-                    // store all stage metrics here
-                    stageTimes = [:]
-                }
-            }
-        }
-
         stage('Checkout') {
             steps {
                 script {
-                    stageTimes['Checkout'] = [:]
-                    stageTimes['Checkout'].start = System.currentTimeMillis()
+                    long stageStart = System.currentTimeMillis()
+
                     echo "📦 Checking out source code..."
                     checkout scm
-                    stageTimes['Checkout'].end = System.currentTimeMillis()
+
+                    long stageEnd = System.currentTimeMillis()
+                    if (!binding.hasVariable('latencyData')) { latencyData = [:] }
+                    latencyData['Checkout'] = stageEnd - stageStart
                 }
             }
         }
@@ -41,17 +36,13 @@ pipeline {
         stage('Build Application Image') {
             steps {
                 script {
-                    def prevEnd = stageTimes['Checkout'].end
-                    stageTimes['Build'] = [:]
-                    stageTimes['Build'].start = System.currentTimeMillis()
-                    stageTimes['Build'].latency = (stageTimes['Build'].start - prevEnd) / 1000.0
-                    echo "⏱️ Latency since Checkout: ${String.format('%.2f', stageTimes['Build'].latency)}s"
+                    long stageStart = System.currentTimeMillis()
 
-                    echo "🏗️ Building application image..."
+                    echo "🔨 Building application image: ${params.IMAGE_NAME_TO_SCAN}:${params.IMAGE_TAG}"
                     sh "docker build -t ${params.IMAGE_NAME_TO_SCAN}:${params.IMAGE_TAG} -f ./Dockerfile ."
 
-                    stageTimes['Build'].end = System.currentTimeMillis()
-                    stageTimes['Build'].duration = (stageTimes['Build'].end - stageTimes['Build'].start) / 1000.0
+                    long stageEnd = System.currentTimeMillis()
+                    latencyData['Build Application Image'] = stageEnd - stageStart
                 }
             }
         }
@@ -59,26 +50,51 @@ pipeline {
         stage('Authenticate to GCP') {
             steps {
                 script {
-                    def prevEnd = stageTimes['Build'].end
-                    stageTimes['Auth'] = [:]
-                    stageTimes['Auth'].start = System.currentTimeMillis()
-                    stageTimes['Auth'].latency = (stageTimes['Auth'].start - prevEnd) / 1000.0
-                    echo "🌐 Latency since Build Application Image: ${String.format('%.2f', stageTimes['Auth'].latency)}s"
+                    long stageStart = System.currentTimeMillis()
 
+                    // --- Original Stage 3 Code ---
                     withCredentials([file(credentialsId: 'GCP_CREDENTIALS', variable: 'GCP_KEY_FILE')]) {
                         sh "gcloud auth activate-service-account --key-file=\"$GCP_KEY_FILE\""
                         sh 'gcloud auth list'
                         sh 'gcloud auth configure-docker gcr.io --quiet'
                         sh 'gcloud auth configure-docker us-central1-docker.pkg.dev --quiet'
-                        echo "🔍 Running scanner container..."
-                        def exitCode = sh(script: "docker ps > /dev/null", returnStatus: true)
-                        if (exitCode != 0 && !params.IGNORE_SERVER_ERRORS) {
-                            error("❌ GCP auth failed.")
+
+                        def exitCode = sh(
+                            script: """
+                                echo "📦 Running scanner container from image: ${params.SCANNER_IMAGE}"
+
+                                docker run --rm \\
+                                    -v /var/run/docker.sock:/var/run/docker.sock \\
+                                    -v "$GCP_KEY_FILE":/tmp/scc-key.json \\
+                                    -e GCLOUD_KEY_PATH=/tmp/scc-key.json \\
+                                    -e GCP_PROJECT_ID="${params.GCP_PROJECT_ID}" \\
+                                    -e ORGANIZATION_ID="${params.ORGANIZATION_ID}" \\
+                                    -e IMAGE_NAME="${params.IMAGE_NAME_TO_SCAN}" \\
+                                    -e IMAGE_TAG="${params.IMAGE_TAG}" \\
+                                    -e CONNECTOR_ID="${params.CONNECTOR_ID}" \\
+                                    -e BUILD_TAG="${env.JOB_NAME}" \\
+                                    -e BUILD_ID="${env.BUILD_NUMBER}" \\
+                                    "${params.SCANNER_IMAGE}"
+                            """,
+                            returnStatus: true
+                        )
+
+                        if (exitCode == 0) {
+                            echo "✅ Evaluation succeeded: Conformant image."
+                        } else if (exitCode == 1) {
+                            error("❌ Scan failed: Non-conformant image (vulnerabilities found).")
+                        } else {
+                            if (params.IGNORE_SERVER_ERRORS) {
+                                echo "⚠️ Server/internal error occurred, but IGNORE_SERVER_ERRORS=true. Proceeding with pipeline."
+                            } else {
+                                error("❌ Server/internal error occurred during evaluation. Set IGNORE_SERVER_ERRORS=true to override.")
+                            }
                         }
                     }
+                    // --- End Original Stage 3 ---
 
-                    stageTimes['Auth'].end = System.currentTimeMillis()
-                    stageTimes['Auth'].duration = (stageTimes['Auth'].end - stageTimes['Auth'].start) / 1000.0
+                    long stageEnd = System.currentTimeMillis()
+                    latencyData['Authenticate to GCP'] = stageEnd - stageStart
                 }
             }
         }
@@ -86,17 +102,19 @@ pipeline {
         stage('Push Application Image') {
             steps {
                 script {
-                    def prevEnd = stageTimes['Auth'].end
-                    stageTimes['Push'] = [:]
-                    stageTimes['Push'].start = System.currentTimeMillis()
-                    stageTimes['Push'].latency = (stageTimes['Push'].start - prevEnd) / 1000.0
-                    echo "🚀 Latency since Authenticate to GCP: ${String.format('%.2f', stageTimes['Push'].latency)}s"
+                    long stageStart = System.currentTimeMillis()
 
-                    echo "⬆️  Pushing image to Artifact Registry..."
-                    sh "echo 'Simulated docker push success.'"
+                    def localImage = "${params.IMAGE_NAME_TO_SCAN}:${params.IMAGE_TAG}"
+                    def remoteTag = "us-central1-docker.pkg.dev/${params.GCP_PROJECT_ID}/${params.AR_REPOSITORY}/${params.IMAGE_NAME_TO_SCAN}:${params.IMAGE_TAG}"
 
-                    stageTimes['Push'].end = System.currentTimeMillis()
-                    stageTimes['Push'].duration = (stageTimes['Push'].end - stageTimes['Push'].start) / 1000.0
+                    echo "🏷 Tagging local image ${localImage} as ${remoteTag}"
+                    sh "docker tag ${localImage} ${remoteTag}"
+                    
+                    echo "📤 Pushing ${remoteTag} to Artifact Registry..."
+                    sh "docker push ${remoteTag}"
+
+                    long stageEnd = System.currentTimeMillis()
+                    latencyData['Push Application Image'] = stageEnd - stageStart
                 }
             }
         }
@@ -105,74 +123,59 @@ pipeline {
     post {
         always {
             script {
-                def totalDuration = (stageTimes['Push'].end - stageTimes['Checkout'].start) / 1000.0
-
-                def stages = ['Build', 'Auth', 'Push']
-                def latencies = stages.collect { stageTimes[it].latency ?: 0 }
-                def durations = stages.collect { stageTimes[it].duration ?: 0 }
-
+                // --- Generate HTML report ---
                 def html = """
-<!DOCTYPE html>
-<html>
-<head>
-  <meta charset='UTF-8'>
-  <title>Jenkins Latency Report</title>
-  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-  <style>
-    body { font-family: 'Segoe UI', sans-serif; background: #f7fafc; color: #2d3748; margin: 40px; }
-    h1 { color: #2b6cb0; }
-    table { border-collapse: collapse; width: 100%; margin-top: 20px; background: white; border-radius: 8px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); }
-    th, td { padding: 12px 16px; border-bottom: 1px solid #eee; text-align: left; }
-    th { background: #2b6cb0; color: white; }
-    .chart-container { margin: 30px auto; width: 80%; background: white; border-radius: 8px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); padding: 20px; }
-  </style>
-</head>
-<body>
-  <h1>📊 Jenkins Latency & Duration Report</h1>
-  <p><strong>Build #${env.BUILD_NUMBER}</strong> — ${new Date()}<br>
-  Total Duration: <strong>${String.format('%.2f', totalDuration)}s</strong></p>
+                <!DOCTYPE html>
+                <html>
+                <head>
+                    <meta charset="UTF-8">
+                    <title>Pipeline Latency Report</title>
+                    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+                    <style>
+                        body { font-family: Arial, sans-serif; padding: 20px; background: #f5f5f5; }
+                        h2 { color: #333; }
+                        canvas { background: #fff; border: 1px solid #ccc; padding: 10px; }
+                    </style>
+                </head>
+                <body>
+                    <h2>Pipeline Latency Report - Build #${env.BUILD_NUMBER}</h2>
+                    <canvas id="latencyChart" width="800" height="400"></canvas>
+                    <script>
+                        const ctx = document.getElementById('latencyChart').getContext('2d');
+                        const latencyChart = new Chart(ctx, {
+                            type: 'bar',
+                            data: {
+                                labels: ${latencyData.keySet() as List},
+                                datasets: [{
+                                    label: 'Stage Duration (ms)',
+                                    data: ${latencyData.values() as List},
+                                    backgroundColor: 'rgba(54, 162, 235, 0.6)',
+                                    borderColor: 'rgba(54, 162, 235, 1)',
+                                    borderWidth: 1
+                                }]
+                            },
+                            options: {
+                                responsive: true,
+                                plugins: { legend: { display: false } },
+                                scales: {
+                                    y: { beginAtZero: true, title: { display: true, text: 'Milliseconds' } }
+                                }
+                            }
+                        });
+                    </script>
+                </body>
+                </html>
+                """
 
-  <h2>Stage Summary</h2>
-  <table>
-    <thead><tr><th>Stage</th><th>Duration (s)</th><th>Latency (s)</th></tr></thead>
-    <tbody>
-      ${stages.collect { s -> "<tr><td>${s}</td><td>${String.format('%.2f', stageTimes[s].duration)}</td><td>${String.format('%.2f', stageTimes[s].latency)}</td></tr>" }.join('\n')}
-    </tbody>
-  </table>
-
-  <div class='chart-container'>
-    <h2>📈 Latency Between Stages</h2>
-    <canvas id='latencyChart'></canvas>
-  </div>
-  <div class='chart-container'>
-    <h2>⚙️ Stage Durations</h2>
-    <canvas id='durationChart'></canvas>
-  </div>
-
-  <script>
-    new Chart(document.getElementById('latencyChart'), {
-      type: 'bar',
-      data: {
-        labels: ${stages},
-        datasets: [{ label: 'Latency (s)', data: ${latencies}, backgroundColor: ['#63b3ed','#fc8181','#ed8936'] }]
-      },
-      options: { scales: { y: { beginAtZero: true } } }
-    });
-
-    new Chart(document.getElementById('durationChart'), {
-      type: 'bar',
-      data: {
-        labels: ${stages},
-        datasets: [{ label: 'Duration (s)', data: ${durations}, backgroundColor: ['#48bb78','#4299e1','#ed8936'] }]
-      },
-      options: { scales: { y: { beginAtZero: true } } }
-    });
-  </script>
-</body>
-</html>
-"""
                 writeFile file: REPORT_FILE, text: html
-                publishHTML([reportDir: '.', reportFiles: REPORT_FILE, reportName: 'Latency Report', keepAll: true])
+
+                // --- Publish HTML report ---
+                publishHTML([
+                    reportDir: '.',
+                    reportFiles: REPORT_FILE,
+                    reportName: 'Latency Report',
+                    keepAll: true
+                ])
             }
         }
     }
