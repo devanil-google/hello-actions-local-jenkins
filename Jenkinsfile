@@ -1,3 +1,7 @@
+import groovy.transform.Field
+
+@Field Map<String, Long> latencyData = [:] // global map for stage latencies
+
 pipeline {
     agent any
 
@@ -22,12 +26,9 @@ pipeline {
             steps {
                 script {
                     long stageStart = System.currentTimeMillis()
-
                     echo "📦 Checking out source code..."
                     checkout scm
-
                     long stageEnd = System.currentTimeMillis()
-                    if (!binding.hasVariable('latencyData')) { latencyData = [:] }
                     latencyData['Checkout'] = stageEnd - stageStart
                 }
             }
@@ -37,10 +38,8 @@ pipeline {
             steps {
                 script {
                     long stageStart = System.currentTimeMillis()
-
                     echo "🔨 Building application image: ${params.IMAGE_NAME_TO_SCAN}:${params.IMAGE_TAG}"
                     sh "docker build -t ${params.IMAGE_NAME_TO_SCAN}:${params.IMAGE_TAG} -f ./Dockerfile ."
-
                     long stageEnd = System.currentTimeMillis()
                     latencyData['Build Application Image'] = stageEnd - stageStart
                 }
@@ -52,13 +51,14 @@ pipeline {
                 script {
                     long stageStart = System.currentTimeMillis()
 
-                    // --- Original Stage 3 Code ---
                     withCredentials([file(credentialsId: 'GCP_CREDENTIALS', variable: 'GCP_KEY_FILE')]) {
+                        // Authenticate
                         sh "gcloud auth activate-service-account --key-file=\"$GCP_KEY_FILE\""
                         sh 'gcloud auth list'
                         sh 'gcloud auth configure-docker gcr.io --quiet'
                         sh 'gcloud auth configure-docker us-central1-docker.pkg.dev --quiet'
 
+                        // Run scanner container
                         def exitCode = sh(
                             script: """
                                 echo "📦 Running scanner container from image: ${params.SCANNER_IMAGE}"
@@ -91,7 +91,6 @@ pipeline {
                             }
                         }
                     }
-                    // --- End Original Stage 3 ---
 
                     long stageEnd = System.currentTimeMillis()
                     latencyData['Authenticate to GCP'] = stageEnd - stageStart
@@ -107,10 +106,10 @@ pipeline {
                     def localImage = "${params.IMAGE_NAME_TO_SCAN}:${params.IMAGE_TAG}"
                     def remoteTag = "us-central1-docker.pkg.dev/${params.GCP_PROJECT_ID}/${params.AR_REPOSITORY}/${params.IMAGE_NAME_TO_SCAN}:${params.IMAGE_TAG}"
 
-                    echo "🏷 Tagging local image ${localImage} as ${remoteTag}"
+                    echo "Tagging local image ${localImage} as ${remoteTag}"
                     sh "docker tag ${localImage} ${remoteTag}"
-                    
-                    echo "📤 Pushing ${remoteTag} to Artifact Registry..."
+
+                    echo "Pushing ${remoteTag} to Artifact Registry..."
                     sh "docker push ${remoteTag}"
 
                     long stageEnd = System.currentTimeMillis()
@@ -123,7 +122,9 @@ pipeline {
     post {
         always {
             script {
-                // --- Generate HTML report ---
+                echo "Latencies: ${latencyData}"
+
+                // Generate HTML report with Chart.js
                 def html = """
                 <!DOCTYPE html>
                 <html>
@@ -132,8 +133,7 @@ pipeline {
                     <title>Pipeline Latency Report</title>
                     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
                     <style>
-                        body { font-family: Arial, sans-serif; padding: 20px; background: #f5f5f5; }
-                        h2 { color: #333; }
+                        body { font-family: Arial; padding: 20px; background: #f5f5f5; }
                         canvas { background: #fff; border: 1px solid #ccc; padding: 10px; }
                     </style>
                 </head>
@@ -142,7 +142,7 @@ pipeline {
                     <canvas id="latencyChart" width="800" height="400"></canvas>
                     <script>
                         const ctx = document.getElementById('latencyChart').getContext('2d');
-                        const latencyChart = new Chart(ctx, {
+                        new Chart(ctx, {
                             type: 'bar',
                             data: {
                                 labels: ${latencyData.keySet() as List},
@@ -154,25 +154,19 @@ pipeline {
                                     borderWidth: 1
                                 }]
                             },
-                            options: {
-                                responsive: true,
-                                plugins: { legend: { display: false } },
-                                scales: {
-                                    y: { beginAtZero: true, title: { display: true, text: 'Milliseconds' } }
-                                }
-                            }
+                            options: { scales: { y: { beginAtZero: true } } }
                         });
                     </script>
                 </body>
                 </html>
                 """
 
-                writeFile file: REPORT_FILE, text: html
+                writeFile file: env.REPORT_FILE, text: html
 
-                // --- Publish HTML report ---
+                // Publish HTML report in Jenkins
                 publishHTML([
                     reportDir: '.',
-                    reportFiles: REPORT_FILE,
+                    reportFiles: env.REPORT_FILE,
                     reportName: 'Latency Report',
                     keepAll: true
                 ])
