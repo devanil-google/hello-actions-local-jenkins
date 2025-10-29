@@ -9,22 +9,22 @@ pipeline {
         )
         string(
             name: 'GCP_PROJECT_ID',
-            defaultValue: 'projectId',
+            defaultValue: 'cispoc',
             description: 'GCP Project ID for authentication'
         )
         string(
             name: 'AR_REPOSITORY',
-            defaultValue: 'images',
+            defaultValue: 'demo-images',
             description: 'Artifact Registry repository name (e.g., app-repo)'
         )
         string(
             name: 'ORGANIZATION_ID',
-            defaultValue: 'orgId',
+            defaultValue: '714470867684',
             description: 'Your GCP Organization ID'
         )
         string(
             name: 'CONNECTOR_ID',
-            defaultValue: 'connectorId',
+            defaultValue: 'organizations/714470867684/locations/global/connectors/privatepreviewdemo',
             description: 'The ID for your pipeline connector'
         )
         string(
