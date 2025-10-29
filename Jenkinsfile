@@ -1,41 +1,39 @@
 pipeline {
-    // Define an agent. This agent MUST have Docker, gcloud CLI, and git installed.
-    // 'any' will pick any available agent. You might use a specific label.
-    agent { any }
+    agent any
 
     // Replicates the 'workflow_dispatch' inputs
     parameters {
-        stringParam(
+        string(
             name: 'IMAGE_NAME_TO_SCAN',
             defaultValue: 'checkout-image',
             description: 'The tag for your application image to be built (e.g., my-app:latest)'
         )
-        stringParam(
+        string(
             name: 'GCP_PROJECT_ID',
             defaultValue: 'projectId',
             description: 'GCP Project ID for authentication'
         )
-        stringParam(
+        string(
             name: 'AR_REPOSITORY',
             defaultValue: 'images',
             description: 'Artifact Registry repository name (e.g., app-repo)'
         )
-        stringParam(
+        string(
             name: 'ORGANIZATION_ID',
             defaultValue: 'orgId',
             description: 'Your GCP Organization ID'
         )
-        stringParam(
+        string(
             name: 'CONNECTOR_ID',
             defaultValue: 'connectorId',
             description: 'The ID for your pipeline connector'
         )
-        stringParam(
+        string(
             name: 'SCANNER_IMAGE',
             defaultValue: 'us-central1-docker.pkg.dev/ci-plugin/ci-images/scc-artifactguard-scan-image:latest',
             description: 'The full registry path for your PRE-BUILT scanner tool'
         )
-        stringParam(
+        string(
             name: 'IMAGE_TAG',
             defaultValue: 'latest',
             description: 'The Docker image version (of the app image)'
@@ -45,7 +43,7 @@ pipeline {
             defaultValue: false,
             description: 'Ignore server errors'
         )
-        stringParam(
+        string(
             name: 'VERBOSITY',
             defaultValue: 'HIGH',
             description: 'Verbosity flag'
@@ -61,28 +59,24 @@ pipeline {
             }
         }
 
-        // Stage 2: Combines all logic from the GHA 'build-and-scan' job
+        // Stage 2: Build, Scan, and Push
         stage('Build, Scan, and Push') {
             steps {
-                // This block securely provides the GCP credentials as a file
-                // You must create a "Secret file" credential in Jenkins with the
-                // ID 'GCP_CREDENTIALS_FILE'
                 withCredentials([file(credentialsId: 'GCP_CREDENTIALS_FILE', variable: 'GCP_KEY_PATH')]) {
-                    
-                    // Step 2, 3, 4: Authenticate to GCP and configure Docker
+
+                    // Authenticate to GCP and configure Docker
                     echo "Authenticating to GCP and configuring Docker..."
                     sh "gcloud auth activate-service-account --key-file=${GCP_KEY_PATH}"
                     sh "gcloud config set project ${params.GCP_PROJECT_ID}"
                     sh "gcloud auth configure-docker us-central1-docker.pkg.dev --quiet"
 
-                    // Step 6: Build Application Image Locally
+                    // Build Application Image
                     echo "Building application image: ${params.IMAGE_NAME_TO_SCAN}:${params.IMAGE_TAG}"
                     sh "docker build -t ${params.IMAGE_NAME_TO_SCAN}:${params.IMAGE_TAG} -f ./Dockerfile ."
 
-                    // Step 7: Run Image Scan (inside a script block for logic)
+                    // Run Image Scan
                     echo "📦 Running Image Analysis Scan..."
                     script {
-                        // Use 'returnStatus: true' to capture the exit code instead of failing the build
                         def scanExitCode = sh(
                             script: """
                                 docker run --rm \
@@ -100,19 +94,16 @@ pipeline {
                                   "${params.SCANNER_IMAGE}"
                             """,
                             returnStatus: true
-                        ) as int // Cast the status to an integer
+                        ) as int
 
                         echo "Docker run finished with exit code: ${scanExitCode}"
 
-                        // Replicate the exit code logic
                         if (scanExitCode == 0) {
                             echo "✅ Evaluation succeeded: Conformant image."
                         } else if (scanExitCode == 1) {
                             echo "❌ Scan failed: Non-conformant image (vulnerabilities found)."
-                            // 'error' will stop the pipeline and mark it as FAILED
                             error("Scan failed: Non-conformant image.") 
                         } else {
-                            // Check the boolean parameter directly
                             if (params.IGNORE_SERVER_ERRORS) {
                                 echo "⚠️ Server/internal error occurred (Code: ${scanExitCode}), but IGNORE_SERVER_ERRORS=true. Proceeding."
                             } else {
@@ -120,10 +111,9 @@ pipeline {
                                 error("Scan failed: Server/internal error. Set IGNORE_SERVER_ERRORS=true to override.")
                             }
                         }
-                    } // end script
+                    }
 
-                    // Step 8: Push Application Image
-                    // This step will only run if the 'script' block above did not call 'error()'
+                    // Push Application Image
                     echo "Pushing application image to Artifact Registry..."
                     script {
                         def localImage = "${params.IMAGE_NAME_TO_SCAN}:${params.IMAGE_TAG}"
@@ -134,10 +124,10 @@ pipeline {
                         
                         echo "Pushing ${remoteTag} to Artifact Registry..."
                         sh "docker push ${remoteTag}"
-                    } // end script
-                    
-                } // end withCredentials
-            } // end steps
-        } // end stage
-    } // end stages
+                    }
+
+                }
+            }
+        }
+    }
 }
