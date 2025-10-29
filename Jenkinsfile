@@ -1,4 +1,6 @@
 // A map to store the duration (in seconds) of each stage
+import groovy.transform.Field  // <-- ADD THIS LINE
+@Field def stageTimings = [:]   // <-- ADD THIS ANNOTATION
 def stageTimings = [:]
 
 pipeline {
