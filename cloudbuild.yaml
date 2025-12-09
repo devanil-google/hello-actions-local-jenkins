@@ -1,7 +1,7 @@
 steps:
   # 1. Generate Access Token and save it to the shared /workspace
   - name: 'gcr.io/cloud-builders/gcloud'
-    id: 'Generate Token'
+    id: 'Generate Token.'
     entrypoint: 'bash'
     args:
       - '-c'
