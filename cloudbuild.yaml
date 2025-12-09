@@ -1,0 +1,117 @@
+steps:
+  # 1. Generate Access Token and save it to the shared /workspace
+  - name: 'gcr.io/cloud-builders/gcloud'
+    id: 'Generate Token'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        echo "Starting token generation for the service account..."
+        # gcloud auth print-access-token gets a short-lived token
+        gcloud auth print-access-token > /workspace/gcp_token.txt
+        if [ $? -ne 0 ]; then
+          echo "Failed to generate token." >&2
+          exit 1
+        fi
+        echo "Token generated successfully."
+
+  # 2. Build the Docker Image from source
+  - name: 'gcr.io/cloud-builders/docker'
+    id: 'Build Image'
+    args:
+      - 'build'
+      - '-t'
+      - '${_IMAGE_NAME_TO_SCAN}:${_IMAGE_TAG}'
+      - '.'
+
+  # 3. DIRECT API TEST (Non-isolated environment)
+  # This tests if the Service Account and IAM role work outside of the 'docker run' isolation.
+  - name: 'gcr.io/cloud-builders/gcloud'
+    id: 'Test-API-Direct'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        echo "Starting direct API test..."
+        # Use $$ for shell variables defined within this block
+        ACCESS_TOKEN=$$(cat /workspace/gcp_token.txt) 
+        
+        # Use single $ for Cloud Build substitution variables
+        API_ENDPOINT='artifactscanguard.googleapis.com'
+        ORGANIZATION_ID='${_ORGANIZATION_ID}'
+        PROJECT_ID='${_PROJECT_ID}'
+        
+        # Use $$ for shell variables inside curl
+        api_response=$$(curl -s -X GET \
+            -H "Authorization: Bearer $$ACCESS_TOKEN" \
+            -H "Content-Type: application/json" \
+            -H "X-Goog-User-Project: $$PROJECT_ID" \
+            -G \
+            --data-urlencode "artifact_metadata.image_name=${_IMAGE_NAME_TO_SCAN}" \
+            --data-urlencode "artifact_metadata.image_tag=${_IMAGE_TAG}" \
+            --data-urlencode "artifact_metadata.image_digest=${_IMAGE_DIGEST}" \
+            "https://$$API_ENDPOINT/v1alpha/organizations/$$ORGANIZATION_ID/locations/global/artifactEvaluations:dataGateway")
+        
+        echo "API Response Status:"
+        echo "$$api_response"
+        echo "--- Full Response ---"
+        echo "$$api_response"
+
+        # Check for failure
+        if echo "$$api_response" | grep -q "PERMISSION_DENIED"; then
+            echo "❌ Direct API Test FAILED (403)." >&2
+        fi
+        echo "✅ Direct API Test Finished."
+
+  # 4. Image Analysis - Run the scanner image as a container (Original Step 3)
+  - id: 'Image-Analysis'
+    name: '$_SCANNER_IMAGE'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        echo "Starting image analysis and API submission..."
+        
+        # Use $$ for shell variables inside this block
+        exit_code=0
+        docker run --rm \
+          -v /var/run/docker.sock:/var/run/docker.sock \
+          -v /workspace:/workspace \
+          -e GCP_PROJECT_ID="${_PROJECT_ID}" \
+          -e ORGANIZATION_ID="${_ORGANIZATION_ID}" \
+          -e IMAGE_NAME="${_IMAGE_NAME_TO_SCAN}" \
+          -e IMAGE_TAG="${_IMAGE_TAG}" \
+          -e IMAGE_DIGEST="${_IMAGE_DIGEST}" \
+          -e API_ENDPOINT="${_API_ENDPOINT}" \
+          -e CONNECTOR_ID="${_CONNECTOR_ID}" \
+          -e BUILD_TAG="${_BUILD_TAG}" \
+          -e BUILD_ID="${BUILD_ID}" \
+          -e GCP_ACCESS_TOKEN="$$(cat /workspace/gcp_token.txt)" \
+          "$_SCANNER_IMAGE" || exit_code=$$?
+          
+        if [ $$exit_code -ne 0 ]; then
+          echo "❌ Image analysis failed with exit code $$exit_code." >&2
+          exit 1
+        fi
+        echo "✅ Image analysis completed successfully."
+
+# ----------------------------------------------------------------------
+# GLOBAL CONFIGURATION
+# ----------------------------------------------------------------------
+
+substitutions:
+  # User-defined variables (MUST start with an underscore)
+  _IMAGE_NAME_TO_SCAN: 'alpine'
+  _ORGANIZATION_ID: '714470867684'
+  _SCANNER_IMAGE: 'gcr.io/ci-plugin/cloud-build-integration:latest'
+  _IMAGE_TAG: 'latest'
+  _IMAGE_DIGEST: 'sha256:b0c6491f5ba0dff4c919008f5ab48db97315676136c21796e41fb6326e88d02a'
+  _API_ENDPOINT: 'artifactscanguard.googleapis.com'  
+  _CONNECTOR_ID: 'connector-id-3'
+  _BUILD_TAG: 'cloud-build-job'
+  _PROJECT_ID: 'cispoc' # Added for clarity
+
+serviceAccount: "projects/cispoc/serviceAccounts/github-actions-sa@cispoc.iam.gserviceaccount.com"
+
+options:
+  logging: CLOUD_LOGGING_ONLY
